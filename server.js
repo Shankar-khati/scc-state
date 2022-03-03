@@ -4,7 +4,9 @@ const Action = require('socketcluster-server/action');
 const url = require('url');
 const semverRegex = /\d+\.\d+\.\d+/;
 const eetase = require('eetase');
+const SentryNode  = require('@sentry/node');
 const packageVersion = require(`./package.json`).version;
+const packageName = require(`./package.json`).name;
 const requiredMajorSemver = getMajorSemver(packageVersion);
 
 const DEFAULT_PORT = 7777;
@@ -47,6 +49,39 @@ if (typeof process.env.SCC_STATE_LOG_LEVEL !== 'undefined') {
 
 let httpServer = eetase(http.createServer());
 let agServer = socketClusterServer.attach(httpServer);
+
+function getENV(key, defaultValue = null) {
+  return process.env[key] || defaultValue;
+}
+
+
+//setup sentry
+(async () => {
+    const release = `${packageName}@${packageVersion}`;
+    const sentryHost = getENV('SENTRY_HOST');
+    const sentryPort = Number(getENV('SENTRY_PORT', '80'));
+    const sentryProjectId = getENV('SENTRY_PROJECT_ID', 2);
+    const sentrySecret = getENV('SENTRY_SECRET');
+    const sentryProtocol = getENV('SENTRT_HOST_PROTOCOL', 'https');
+    const host = sentryPort && sentryPort !== 80 ? `${sentryHost}:${sentryPort}` : sentryHost;
+    const dsn = `${sentryProtocol}://${sentrySecret}@${host}/${sentryProjectId}`;
+
+    const sentryConfig = {
+        dsn,
+        release,
+        environment: getENV('NODE_ENV'),
+        integrations: [
+            new SentryNode.Integrations.Http({ tracing: true }),
+            new SentryNode.Integrations.OnUnhandledRejection(),
+            new SentryNode.Integrations.Console(),
+            new SentryNode.Integrations.LinkedErrors(),
+            new SentryNode.Integrations.Modules()
+        ],
+        onFatalError: (firstError, secondError) => SentryNode.captureException(firstError, { secondError }),
+        tracesSampleRate: Number(getENV('SENTRY_SAMPLE_RATE', '0.2')),
+    };
+    SentryNode.init(sentryConfig);
+})();
 
 (async () => {
   for await (let [req, res] of httpServer.listener('request')) {
@@ -191,12 +226,14 @@ let getRemoteIp = function (socket, data) {
 
 (async () => {
   for await (let {error} of agServer.listener('error')) {
+    SentryNode.captureException(error);
     logError(error);
   }
 })();
 
 (async () => {
   for await (let {warning} of agServer.listener('warning')) {
+    SentryNode.captureMessage(warning);
     logWarning(warning);
   }
 })();
@@ -209,6 +246,7 @@ agServer.setMiddleware(agServer.MIDDLEWARE_HANDSHAKE, async (middlewareStream) =
         if (!urlParts.query || urlParts.query.authKey !== SCC_AUTH_KEY) {
           let err = new Error('Cannot connect to the scc-state instance without providing a valid authKey as a URL query argument.');
           err.name = 'BadClusterAuthError';
+          SentryNode.captureException(err);
           action.block(err);
 
           continue;
@@ -237,6 +275,7 @@ agServer.setMiddleware(agServer.MIDDLEWARE_HANDSHAKE, async (middlewareStream) =
           err = new Error(`The ${instanceType}@${version} at address ${remoteAddress}:${instancePort} is incompatible with the scc-state@^${packageVersion}. Please, update the ${instanceType} up to version ^${requiredMajorSemver}.0.0`);
         }
         err.name = 'CompatibilityError';
+        SentryNode.captureException(err);
         action.block(err);
 
         continue;
@@ -290,9 +329,9 @@ agServer.setMiddleware(agServer.MIDDLEWARE_HANDSHAKE, async (middlewareStream) =
 
         if (!serverReady) {
           logWarning(`The scc-worker instance ${data.instanceId} at address ${socket.instanceIp} on socket ${socketId} was not allowed to join the cluster because the server is waiting for initial brokers`);
-          req.error(
-            new Error('The server is waiting for initial broker connections')
-          );
+          const err = new Error('The server is waiting for initial broker connections')
+          req.error(err);
+          SentryNode.captureException(err);
           continue;
         }
 
