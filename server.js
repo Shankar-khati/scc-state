@@ -58,22 +58,13 @@ function getENV(key, defaultValue = null) {
 //setup sentry
 (async () => {
     const release = `${packageName}@${packageVersion}`;
-    const sentryHost = getENV('SENTRY_HOST');
-    const sentryPort = Number(getENV('SENTRY_PORT', '80'));
-    const sentryProjectId = getENV('SENTRY_PROJECT_ID', 2);
-    const sentrySecret = getENV('SENTRY_SECRET');
-    const sentryProtocol = getENV('SENTRT_HOST_PROTOCOL', 'https');
-    const host = sentryPort && sentryPort !== 80 ? `${sentryHost}:${sentryPort}` : sentryHost;
-    const dsn = `${sentryProtocol}://${sentrySecret}@${host}/${sentryProjectId}`;
 
     const sentryConfig = {
-        dsn,
         release,
         environment: getENV('NODE_ENV'),
         integrations: [
             new SentryNode.Integrations.Http({ tracing: true }),
             new SentryNode.Integrations.OnUnhandledRejection(),
-            new SentryNode.Integrations.Console(),
             new SentryNode.Integrations.LinkedErrors(),
             new SentryNode.Integrations.Modules()
         ],
@@ -183,7 +174,9 @@ let sccBrokerLeaveCluster = function (socket, req) {
   if (req) {
     req.end();
   }
-  logInfo(`The scc-broker instance ${socket.instanceId} at address ${socket.instanceIp} on port ${socket.instancePort} left the cluster on socket ${socket.id}`);
+  const msg = `The scc-broker instance ${socket.instanceId} at address ${socket.instanceIp} on port ${socket.instancePort} left the cluster on socket ${socket.id}`;
+  SentryNode.captureMessage(msg, SentryNode.Severity.Info);
+  logInfo(msg);
 };
 
 let sccWorkerLeaveCluster = function (socket, req) {
@@ -195,7 +188,9 @@ let sccWorkerLeaveCluster = function (socket, req) {
   if (req) {
     req.end();
   }
-  logInfo(`The scc-worker instance ${socket.instanceId} at address ${socket.instanceIp} left the cluster on socket ${socket.id}`);
+  const msg = `The scc-worker instance ${socket.instanceId} at address ${socket.instanceIp} left the cluster on socket ${socket.id}`;
+  SentryNode.captureMessage(msg, SentryNode.Severity.Info);
+  logInfo(msg);
 };
 
 let invokeRPCOnInstance = async function (socket, procedureName, data) {
@@ -348,7 +343,7 @@ agServer.setMiddleware(agServer.MIDDLEWARE_HANDSHAKE, async (middlewareStream) =
           });
         }, CLUSTER_SCALE_OUT_DELAY);
 
-        let clusterState = getSCCClusterState();
+        let clusterState = getSCCClusterState();  
         clusterState.sccSourceWorkerURI = getInstanceURI(socket);
         req.end(clusterState);
         logInfo(`The scc-worker instance ${data.instanceId} at address ${socket.instanceIp} joined the cluster on socket ${socketId}`);
